@@ -1,0 +1,53 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start frontend dev server",
+			"type": "shell",
+			"command": "cd /d \"d:\\new\\frontend\" && npm install && npm run dev -- --host 0.0.0.0 --port 5173",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run updated backend API",
+			"type": "shell",
+			"command": "D:\\new\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"uvicorn",
+				"main:app",
+				"--host",
+				"0.0.0.0",
+				"--port",
+				"8000",
+				"--reload"
+			],
+			"isBackground": true,
+			"options": {
+				"cwd": "D:\\new\\backend"
+			},
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run frontend dev server",
+			"type": "shell",
+			"command": "Set-Location 'D:\\new\\frontend'; npm run dev -- --host 0.0.0.0 --port 5173",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build frontend verification",
+			"type": "shell",
+			"command": "Set-Location 'D:\\new\\frontend'; npm run build",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
