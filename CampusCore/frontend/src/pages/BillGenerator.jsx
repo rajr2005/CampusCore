@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Download, Mail, ReceiptText, Trash2 } from 'lucide-react';
+import { Download, Mail, Pencil, ReceiptText, Trash2, X } from 'lucide-react';
 import { useDataContext } from '../context/DataContext';
 import {
   createArapalayamBillPdf,
@@ -39,8 +39,9 @@ const formatDate = (value) => {
 };
 
 function BillGenerator() {
-  const { students, courses, bills, addBill, deleteBill, deleteAllBills, sendBillEmail } = useDataContext();
+  const { students, courses, bills, addBill, updateBill, deleteBill, deleteAllBills, sendBillEmail } = useDataContext();
   const [form, setForm] = useState(emptyForm);
+  const [editingBillId, setEditingBillId] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [statusIsError, setStatusIsError] = useState(false);
   const [sendingBillId, setSendingBillId] = useState(null);
@@ -62,18 +63,29 @@ function BillGenerator() {
     () => students.find((student) => String(student.id) === String(form.student_id)) || null,
     [students, form.student_id]
   );
-  const currentBalance = Number(selectedStudent?.balance_fee || 0);
-  const studentInstallmentCount = bills.filter((bill) => (
-    bill.student_id === selectedStudent?.id && bill.payment_type === 'Installment'
-  )).length;
+  const editingBill = bills.find((bill) => bill.id === editingBillId) || null;
+  const currentBalance = editingBill
+    ? Number(editingBill.balance_fee || 0) + Number(editingBill.received_amount || 0)
+    : Number(selectedStudent?.balance_fee || 0);
+  const previousInstallments = bills
+    .filter((bill) => (
+      bill.student_id === selectedStudent?.id
+      && bill.payment_type === 'Installment'
+      && (editingBillId === null || bill.id < editingBillId)
+    ))
+    .sort((left, right) => left.id - right.id);
+  const studentInstallmentCount = previousInstallments.length;
   const amountReceived = Number(form.received_amount || 0);
   const balanceAfterPayment = (
     amountInCents(currentBalance) - amountInCents(amountReceived)
   ) / 100;
   const needsInstallmentDate = form.payment_type === 'Installment' && balanceAfterPayment > 0;
-  const isFinalInstallment = form.payment_type === 'Installment' && studentInstallmentCount === 2;
-  const installmentLimitReached = form.payment_type === 'Installment' && studentInstallmentCount >= 3;
-  const finalInstallmentIsPartial = isFinalInstallment
+  const canCreateFourthInstallment = studentInstallmentCount === 3
+    && Number(previousInstallments[2]?.balance_fee || 0) > 0;
+  const installmentLimitReached = form.payment_type === 'Installment'
+    && (studentInstallmentCount >= 4 || (studentInstallmentCount === 3 && !canCreateFourthInstallment));
+  const finalInstallmentIsPartial = form.payment_type === 'Installment'
+    && canCreateFourthInstallment
     && amountInCents(amountReceived) > 0
     && amountInCents(amountReceived) < amountInCents(currentBalance);
 
@@ -99,7 +111,7 @@ function BillGenerator() {
       ...current,
       payment_type: paymentType,
       received_amount: paymentType === 'Full Cash' && selectedStudent
-        ? String(selectedStudent.balance_fee)
+        ? String(currentBalance)
         : current.received_amount,
       next_installment_date: '',
     }));
@@ -123,12 +135,23 @@ function BillGenerator() {
       return;
     }
     if (installmentLimitReached) {
-      setStatusMessage('A student can pay in no more than 3 installments.');
+      setStatusMessage('A fourth installment is only available after a partial third installment.');
       setStatusIsError(true);
       return;
     }
     if (finalInstallmentIsPartial) {
-      setStatusMessage('This is your final installment, so pay the full balance fees.');
+      setStatusMessage('The fourth installment must pay the full remaining balance.');
+      setStatusIsError(true);
+      return;
+    }
+    const needsFourthInstallment = form.payment_type === 'Installment'
+      && studentInstallmentCount === 2
+      && amountInCents(amountReceived) < amountInCents(currentBalance);
+    if (
+      needsFourthInstallment
+      && !window.confirm('This partial third installment will leave a balance. Is a fourth installment needed?')
+    ) {
+      setStatusMessage('The third installment must pay the full remaining balance unless a fourth installment is needed.');
       setStatusIsError(true);
       return;
     }
@@ -138,20 +161,51 @@ function BillGenerator() {
       student_id: Number(form.student_id),
       received_amount: amountReceived,
       next_installment_date: needsInstallmentDate ? form.next_installment_date || null : null,
+      allow_fourth_installment: needsFourthInstallment,
     };
-    const savedBill = await addBill(payload);
+    const savedBill = editingBill
+      ? await updateBill(editingBill.id, payload)
+      : await addBill(payload);
     if (!savedBill) {
-      setStatusMessage('Unable to create the bill. Check the payment details and installment limit.');
+      setStatusMessage(`Unable to ${editingBill ? 'update' : 'create'} the bill. Check the payment details and installment limit.`);
       setStatusIsError(true);
       return;
     }
 
-    setForm((current) => ({
-      ...current,
-      received_amount: '',
-      next_installment_date: '',
-    }));
-    setStatusMessage(`Receipt ${savedBill.receipt_number} created. Remaining balance: INR ${formatAmount(savedBill.balance_fee)}.`);
+    const wasEditing = Boolean(editingBill);
+    setEditingBillId(null);
+    setForm(wasEditing
+      ? emptyForm()
+      : (current) => ({
+        ...current,
+        received_amount: '',
+        next_installment_date: '',
+      }));
+    setStatusMessage(`Receipt ${savedBill.receipt_number} ${wasEditing ? 'updated' : 'created'}. Remaining balance: INR ${formatAmount(savedBill.balance_fee)}.`);
+    setStatusIsError(false);
+  };
+
+  const handleEditBill = (bill) => {
+    setEditingBillId(bill.id);
+    setForm({
+      receipt_date: bill.receipt_date,
+      student_id: String(bill.student_id),
+      payment_type: bill.payment_type,
+      mode_of_payment: bill.mode_of_payment,
+      received_amount: String(bill.received_amount),
+      receipt_generated_by: bill.receipt_generated_by,
+      course_duration: bill.course_duration || '',
+      next_installment_date: bill.next_installment_date || '',
+    });
+    setStatusMessage('');
+    setStatusIsError(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingBillId(null);
+    setForm(emptyForm());
+    setStatusMessage('');
     setStatusIsError(false);
   };
 
@@ -225,7 +279,7 @@ function BillGenerator() {
 
       <section className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
         <h3 className="mb-5 flex items-center gap-2 border-b pb-3 text-lg font-bold text-gray-800">
-          <ReceiptText size={20} /> Create Receipt
+          <ReceiptText size={20} /> {editingBill ? `Edit Receipt ${editingBill.receipt_number}` : 'Create Receipt'}
         </h3>
         <form onSubmit={handleCreateBill} className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           <label className="block text-sm font-medium text-gray-700">
@@ -244,6 +298,7 @@ function BillGenerator() {
               required
               value={form.student_id}
               onChange={(event) => handleStudentChange(event.target.value)}
+              disabled={Boolean(editingBill)}
               className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
             >
               <option value="">Select a student</option>
@@ -258,7 +313,7 @@ function BillGenerator() {
             Receipt Number
             <input
               readOnly
-              value="Generated automatically"
+              value={editingBill?.receipt_number || 'Generated automatically'}
               className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700"
             />
           </label>
@@ -366,17 +421,19 @@ function BillGenerator() {
           )}
           {selectedStudent && form.payment_type === 'Installment' && (
             <p className="rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-800 md:col-span-2 lg:col-span-3">
-              Installment {Math.min(studentInstallmentCount + 1, 3)} of 3
+              {canCreateFourthInstallment
+                ? 'Installment 4 of 4. Pay the full remaining balance.'
+                : `Installment ${Math.min(studentInstallmentCount + 1, 3)} of 3`}
             </p>
           )}
           {finalInstallmentIsPartial && (
             <p role="alert" className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 md:col-span-2 lg:col-span-3">
-              This is your final installment, so pay the full balance fees.
+              This fourth installment must pay the full remaining balance.
             </p>
           )}
           {installmentLimitReached && (
             <p role="alert" className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 md:col-span-2 lg:col-span-3">
-              Three installments have already been paid. Choose Full Cash to pay the remaining balance.
+              Three installments have already been paid. A fourth is available only if the third installment left a balance. Otherwise choose Full Cash.
             </p>
           )}
           {statusMessage && (
@@ -384,13 +441,22 @@ function BillGenerator() {
               {statusMessage}
             </p>
           )}
-          <div className="flex justify-end md:col-span-2 lg:col-span-3">
+          <div className="flex justify-end gap-3 md:col-span-2 lg:col-span-3">
+            {editingBill && (
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2.5 font-medium text-gray-700 hover:bg-gray-50"
+              >
+                <X size={16} /> Cancel
+              </button>
+            )}
             <button
               type="submit"
               disabled={!selectedStudent || currentBalance <= 0 || installmentLimitReached || finalInstallmentIsPartial}
               className="rounded-lg bg-primary px-5 py-2.5 font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Create Bill
+              {editingBill ? 'Save Changes' : 'Create Bill'}
             </button>
           </div>
         </form>
@@ -505,6 +571,15 @@ function BillGenerator() {
                     </div>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => handleEditBill(bill)}
+                      disabled={deletingBillId !== null || clearingBills}
+                      aria-label={`Edit receipt ${bill.receipt_number}`}
+                      className="mr-3 inline-flex items-center gap-1 text-sm text-primary hover:text-emerald-700 disabled:opacity-50"
+                    >
+                      <Pencil size={16} /> Edit
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleDeleteBill(bill)}

@@ -149,6 +149,7 @@ class BillReceiptCreate(BaseModel):
     receipt_generated_by: str = Field(min_length=1, max_length=100)
     course_duration: Optional[str] = None
     next_installment_date: Optional[date] = None
+    allow_fourth_installment: bool = False
 
     @field_validator("receipt_generated_by")
     @classmethod
@@ -157,6 +158,9 @@ class BillReceiptCreate(BaseModel):
         if not value:
             raise ValueError("This field cannot be blank")
         return value
+
+class BillReceiptUpdate(BillReceiptCreate):
+    pass
 
 class BillEmailRequest(BaseModel):
     pdf_data: str = Field(min_length=1, max_length=14_000_000)
@@ -260,6 +264,24 @@ class SubadminCreate(UserBase):
             raise ValueError("Username cannot be blank")
         return value
 
+class SubadminUpdate(BaseModel):
+    username: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def strip_username(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("Username cannot be blank")
+        return value
+
 class UserSummary(UserBase):
     id: int
     role: Literal["admin", "subadmin"]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

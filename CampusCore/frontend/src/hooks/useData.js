@@ -13,6 +13,7 @@ export function useData(onLogout, role) {
   const [bills, setBills] = useState([]);
   const [payslips, setPayslips] = useState([]);
   const [recurringExpenses, setRecurringExpenses] = useState([]);
+  const [subadmins, setSubadmins] = useState([]);
 
   const getHeaders = useCallback(() => {
     const token = localStorage.getItem('finance_auth_token');
@@ -95,6 +96,13 @@ export function useData(onLogout, role) {
     } catch (error) { handleError(error); }
   }, [getHeaders, handleError]);
 
+  const fetchSubadmins = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/subadmins`, { headers: getHeaders() });
+      setSubadmins(res.data);
+    } catch (error) { handleError(error); }
+  }, [getHeaders, handleError]);
+
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -109,6 +117,7 @@ export function useData(onLogout, role) {
         fetchCategories();
         fetchPayslips();
         fetchRecurringExpenses();
+        fetchSubadmins();
       }
     });
     return () => {
@@ -125,15 +134,40 @@ export function useData(onLogout, role) {
     fetchCategories,
     fetchPayslips,
     fetchRecurringExpenses,
+    fetchSubadmins,
   ]);
 
   const createSubadmin = async (user) => {
     try {
       const res = await axios.post(`${API_BASE_URL}/subadmins`, user, { headers: getHeaders() });
+      setSubadmins(prev => [...prev, res.data].sort((left, right) => left.username.localeCompare(right.username)));
       return res.data;
     } catch (error) {
       handleError(error);
       return null;
+    }
+  };
+
+  const updateSubadmin = async (id, userUpdate) => {
+    try {
+      const res = await axios.put(`${API_BASE_URL}/subadmins/${id}`, userUpdate, { headers: getHeaders() });
+      setSubadmins(prev => prev.map(user => user.id === id ? res.data : user)
+        .sort((left, right) => left.username.localeCompare(right.username)));
+      return res.data;
+    } catch (error) {
+      handleError(error);
+      return null;
+    }
+  };
+
+  const deleteSubadmin = async (id) => {
+    try {
+      await axios.delete(`${API_BASE_URL}/subadmins/${id}`, { headers: getHeaders() });
+      setSubadmins(prev => prev.filter(user => user.id !== id));
+      return true;
+    } catch (error) {
+      handleError(error);
+      return false;
     }
   };
 
@@ -294,6 +328,27 @@ export function useData(onLogout, role) {
     } catch (error) { handleError(error); return null; }
   };
 
+  const updateBill = async (id, bill) => {
+    try {
+      const res = await axios.put(`${API_BASE_URL}/bills/${id}`, bill, { headers: getHeaders() });
+      const previousBill = bills.find(item => item.id === id);
+      setBills(prev => prev.map(item => item.id === id ? res.data : item));
+      setStudents(prev => prev.map(student => (
+        student.id === res.data.student_id
+          ? {
+            ...student,
+            balance_fee: Number((
+              Number(student.balance_fee || 0)
+              + Number(previousBill?.received_amount || 0)
+              - Number(res.data.received_amount || 0)
+            ).toFixed(2)),
+          }
+          : student
+      )));
+      return res.data;
+    } catch (error) { handleError(error); return null; }
+  };
+
   const deleteBill = async (id) => {
     try {
       await axios.delete(`${API_BASE_URL}/bills/${id}`, { headers: getHeaders() });
@@ -359,14 +414,14 @@ export function useData(onLogout, role) {
   };
 
   return {
-    createSubadmin,
+    subadmins, createSubadmin, updateSubadmin, deleteSubadmin,
     incomes, addIncome, deleteIncome,
     expenses, addExpense, deleteExpense,
     categories, addCategory, toggleCategoryStatus, deleteCategory,
     employees, addEmployee, updateEmployee, deleteEmployee,
     courses, addCourse, updateCourse, deleteCourse,
     students, addStudent, updateStudent, deleteStudent,
-    bills, addBill, deleteBill, deleteAllBills, sendBillEmail,
+    bills, addBill, updateBill, deleteBill, deleteAllBills, sendBillEmail,
     payslips, addPayslip, sendPayslip,
     recurringExpenses, addRecurringExpense, updateRecurringExpense, deleteRecurringExpense
   };

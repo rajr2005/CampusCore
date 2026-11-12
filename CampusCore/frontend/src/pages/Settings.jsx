@@ -1,17 +1,18 @@
 import React, { useState } from 'react';
 import { useDataContext } from '../context/DataContext';
-import { Plus, Trash2 } from 'lucide-react';
+import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 
 function Settings() {
   const { 
     categories, addCategory, toggleCategoryStatus, deleteCategory,
     employees, addEmployee, deleteEmployee,
     recurringExpenses, addRecurringExpense, deleteRecurringExpense,
-    createSubadmin
+    subadmins, createSubadmin, updateSubadmin, deleteSubadmin
   } = useDataContext();
   const [subadminUsername, setSubadminUsername] = useState('');
   const [subadminPassword, setSubadminPassword] = useState('');
   const [subadminMessage, setSubadminMessage] = useState('');
+  const [editingSubadmin, setEditingSubadmin] = useState(null);
 
   // Category State
   const [newCategory, setNewCategory] = useState('');
@@ -42,6 +43,25 @@ function Settings() {
     setSubadminUsername('');
     setSubadminPassword('');
     setSubadminMessage(`Subadmin account "${created.username}" created.`);
+  };
+
+  const handleUpdateSubadmin = async (event) => {
+    event.preventDefault();
+    setSubadminMessage('');
+    const update = { username: editingSubadmin.username.trim() };
+    if (editingSubadmin.password) update.password = editingSubadmin.password;
+    const updated = await updateSubadmin(editingSubadmin.id, update);
+    if (!updated) return;
+    setEditingSubadmin(null);
+    setSubadminMessage(`Subadmin account "${updated.username}" updated.`);
+  };
+
+  const handleDeleteSubadmin = async (subadmin) => {
+    if (!window.confirm(`Delete subadmin account "${subadmin.username}"?`)) return;
+    setSubadminMessage('');
+    if (await deleteSubadmin(subadmin.id)) {
+      setSubadminMessage(`Subadmin account "${subadmin.username}" deleted.`);
+    }
   };
 
   const handleAddCategory = (e) => {
@@ -113,6 +133,97 @@ function Settings() {
             Create Subadmin
           </button>
         </form>
+        <div className="mt-6 overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Username</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Created</th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase text-gray-500">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 bg-white">
+              {subadmins.map((subadmin) => (
+                <tr key={subadmin.id}>
+                  {editingSubadmin?.id === subadmin.id ? (
+                    <td colSpan="3" className="px-4 py-3">
+                      <form onSubmit={handleUpdateSubadmin} className="flex flex-wrap items-end gap-4">
+                        <label className="text-sm font-medium text-gray-700">
+                          Username
+                          <input
+                            required
+                            value={editingSubadmin.username}
+                            onChange={(event) => setEditingSubadmin({ ...editingSubadmin, username: event.target.value })}
+                            className="mt-1 block rounded-lg border border-gray-300 px-3 py-2"
+                          />
+                        </label>
+                        <label className="text-sm font-medium text-gray-700">
+                          New password
+                          <input
+                            type="password"
+                            minLength={8}
+                            autoComplete="new-password"
+                            value={editingSubadmin.password}
+                            onChange={(event) => setEditingSubadmin({ ...editingSubadmin, password: event.target.value })}
+                            placeholder="Leave blank to keep current"
+                            className="mt-1 block rounded-lg border border-gray-300 px-3 py-2"
+                          />
+                        </label>
+                        <button
+                          type="submit"
+                          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-white hover:bg-emerald-600"
+                        >
+                          <Check size={18} /> Save changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingSubadmin(null)}
+                          className="flex items-center gap-2 rounded-lg px-4 py-2 text-gray-600 hover:bg-gray-100"
+                        >
+                          <X size={18} /> Cancel
+                        </button>
+                      </form>
+                    </td>
+                  ) : (
+                    <>
+                      <td className="px-4 py-3 text-sm text-gray-800">{subadmin.username}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        {subadmin.created_at ? new Date(subadmin.created_at).toLocaleDateString() : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            aria-label={`Edit ${subadmin.username}`}
+                            onClick={() => setEditingSubadmin({ id: subadmin.id, username: subadmin.username, password: '' })}
+                            className="flex items-center gap-2 rounded-lg px-3 py-2 text-gray-600 hover:bg-gray-100"
+                          >
+                            <Pencil size={18} /> Edit
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Delete ${subadmin.username}`}
+                            onClick={() => handleDeleteSubadmin(subadmin)}
+                            className="rounded-lg p-2 text-red-600 hover:bg-red-50"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </td>
+                    </>
+                  )}
+                </tr>
+              ))}
+              {subadmins.length === 0 && (
+                <tr>
+                  <td colSpan="3" className="px-4 py-6 text-center text-sm text-gray-500">
+                    No subadmin accounts yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
         {subadminMessage && <p role="status" className="mt-3 text-sm text-emerald-700">{subadminMessage}</p>}
       </section>
 

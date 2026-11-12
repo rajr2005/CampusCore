@@ -40,12 +40,6 @@ async function createBillReceiptPdf(receipt, address) {
   const logo = await document.embedPng(await logoResponse.arrayBuffer());
   const logoScale = Math.min(100 / logo.width, 70 / logo.height);
 
-  page.drawLine({
-    start: { x: margin, y: 790 },
-    end: { x: width - margin, y: 790 },
-    thickness: 1.2,
-    color: navy,
-  });
   page.drawImage(logo, {
     x: margin,
     y: 741,
@@ -145,6 +139,13 @@ async function createBillReceiptPdf(receipt, address) {
   });
   centerText(`Receipt Details email to (${receipt.student_email || 'Receiver Email'})`, tableBottom - 30, 9, regular, navy);
   centerText('This is the Computer Generated Bill, Hence Signature Not Required', tableBottom - 56, 9, regular, navy);
+  centerText(
+    'Fees once paid are non-refundable after 5 days from the date of joining. Please ensure all details before making payment.',
+    tableBottom - 82,
+    8,
+    regular,
+    red,
+  );
 
   return document.save();
 }

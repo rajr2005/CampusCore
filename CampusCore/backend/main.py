@@ -107,9 +107,12 @@ smtp_config.read(
 
 
 def get_smtp_setting(name: str, default: str = "") -> str:
-    return os.getenv(f"SMTP_{name.upper()}") or smtp_config.get(
+    value = os.getenv(f"SMTP_{name.upper()}") or smtp_config.get(
         "smtp", name, fallback=default
     )
+    if name == "password" and get_smtp_setting("host").lower() == "smtp.gmail.com":
+        return "".join(value.split())
+    return value
 
 
 app = FastAPI(title="STS Finance API")
@@ -258,6 +261,68 @@ def create_subadmin(
     db.commit()
     db.refresh(subadmin)
     return subadmin
+
+@app.get("/api/subadmins", response_model=List[schemas.UserSummary])
+def get_subadmins(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can manage subadmin accounts")
+    return db.query(models.User).filter(
+        models.User.role == "subadmin"
+    ).order_by(models.User.username).all()
+
+@app.put("/api/subadmins/{subadmin_id}", response_model=schemas.UserSummary)
+def update_subadmin(
+    subadmin_id: int,
+    user_update: schemas.SubadminUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can manage subadmin accounts")
+    subadmin = db.query(models.User).filter(
+        models.User.id == subadmin_id,
+        models.User.role == "subadmin",
+    ).first()
+    if subadmin is None:
+        raise HTTPException(status_code=404, detail="Subadmin account not found")
+
+    updates = user_update.model_dump(exclude_unset=True, exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Provide a username or password to update")
+    if "username" in updates:
+        existing_user = db.query(models.User).filter(
+            models.User.username == updates["username"],
+            models.User.id != subadmin_id,
+        ).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already registered")
+        subadmin.username = updates["username"]
+    if "password" in updates:
+        subadmin.password_hash = get_password_hash(updates["password"])
+
+    db.commit()
+    db.refresh(subadmin)
+    return subadmin
+
+@app.delete("/api/subadmins/{subadmin_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_subadmin(
+    subadmin_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can manage subadmin accounts")
+    subadmin = db.query(models.User).filter(
+        models.User.id == subadmin_id,
+        models.User.role == "subadmin",
+    ).first()
+    if subadmin is None:
+        raise HTTPException(status_code=404, detail="Subadmin account not found")
+    db.delete(subadmin)
+    db.commit()
 
 @app.get("/api/dashboard/summary")
 def get_dashboard_summary(month: int, year: int, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
@@ -585,6 +650,53 @@ def round_currency(value: float) -> Decimal:
     return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def validate_bill_payment(
+    bill: schemas.BillReceiptCreate,
+    current_balance: Decimal,
+    previous_installments: List[models.BillReceipt],
+):
+    installment_count = len(previous_installments)
+    if bill.payment_type == "Installment":
+        if installment_count >= 4:
+            raise HTTPException(status_code=400, detail="A student can pay in no more than 4 installments")
+        if installment_count == 3 and round_currency(previous_installments[-1].balance_fee) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="A fourth installment is only available when the third installment leaves a balance.",
+            )
+
+    received_amount = round_currency(bill.received_amount)
+    if received_amount > current_balance:
+        raise HTTPException(status_code=400, detail="Received amount cannot exceed the student's balance fee")
+
+    remaining_balance = current_balance - received_amount
+    if (
+        bill.payment_type == "Installment"
+        and installment_count == 2
+        and remaining_balance > 0
+        and not bill.allow_fourth_installment
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirm that a fourth installment is needed before leaving a balance on the third installment.",
+        )
+    if bill.payment_type == "Installment" and installment_count == 3 and remaining_balance > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="The fourth installment must pay the full remaining balance.",
+        )
+    if bill.payment_type == "Full Cash" and remaining_balance != Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Full Cash must pay the full remaining balance")
+    if remaining_balance > 0 and bill.payment_type == "Installment" and not bill.next_installment_date:
+        raise HTTPException(status_code=400, detail="Next installment date is required while a balance remains")
+    if remaining_balance == 0 and bill.next_installment_date:
+        raise HTTPException(status_code=400, detail="Next installment date is not needed when the balance is zero")
+    if bill.next_installment_date and bill.next_installment_date <= bill.receipt_date:
+        raise HTTPException(status_code=400, detail="Next installment date must be after the receipt date")
+
+    return received_amount, remaining_balance
+
+
 @app.get("/api/students", response_model=List[schemas.Student])
 def get_students(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     return db.query(models.Student).order_by(models.Student.id.asc()).all()
@@ -703,32 +815,14 @@ def create_bill(bill: schemas.BillReceiptCreate, db: Session = Depends(get_db), 
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    installment_count = db.query(models.BillReceipt).filter(
+    current_balance = round_currency(student.balance_fee)
+    previous_installments = db.query(models.BillReceipt).filter(
         models.BillReceipt.student_id == student.id,
         models.BillReceipt.payment_type == "Installment",
-    ).count()
-    if bill.payment_type == "Installment" and installment_count >= 3:
-        raise HTTPException(status_code=400, detail="A student can pay in no more than 3 installments")
-
-    current_balance = round_currency(student.balance_fee)
-    received_amount = round_currency(bill.received_amount)
-    if received_amount > current_balance:
-        raise HTTPException(status_code=400, detail="Received amount cannot exceed the student's balance fee")
-
-    remaining_balance = current_balance - received_amount
-    if bill.payment_type == "Installment" and installment_count == 2 and remaining_balance > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="This is your final installment, so pay the full balance fees.",
-        )
-    if bill.payment_type == "Full Cash" and remaining_balance != Decimal("0.00"):
-        raise HTTPException(status_code=400, detail="Full Cash must pay the full remaining balance")
-    if remaining_balance > 0 and bill.payment_type == "Installment" and not bill.next_installment_date:
-        raise HTTPException(status_code=400, detail="Next installment date is required while a balance remains")
-    if remaining_balance == 0 and bill.next_installment_date:
-        raise HTTPException(status_code=400, detail="Next installment date is not needed when the balance is zero")
-    if bill.next_installment_date and bill.next_installment_date <= bill.receipt_date:
-        raise HTTPException(status_code=400, detail="Next installment date must be after the receipt date")
+    ).order_by(models.BillReceipt.id.asc()).all()
+    received_amount, remaining_balance = validate_bill_payment(
+        bill, current_balance, previous_installments
+    )
 
     existing_numbers = {
         number for (number,) in db.query(models.BillReceipt.receipt_number).all()
@@ -759,6 +853,75 @@ def create_bill(bill: schemas.BillReceiptCreate, db: Session = Depends(get_db), 
     )
     student.balance_fee = float(remaining_balance)
     db.add(db_bill)
+    db.commit()
+    db.refresh(db_bill)
+    return db_bill
+
+
+@app.put("/api/bills/{bill_id}", response_model=schemas.BillReceipt)
+def update_bill(
+    bill_id: int,
+    bill_update: schemas.BillReceiptUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    db_bill = db.query(models.BillReceipt).filter(models.BillReceipt.id == bill_id).first()
+    if not db_bill:
+        raise HTTPException(status_code=404, detail="Bill receipt not found")
+    if bill_update.student_id != db_bill.student_id:
+        raise HTTPException(status_code=400, detail="A receipt cannot be moved to another student")
+
+    student = db.query(models.Student).filter(models.Student.id == db_bill.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    all_other_installments = db.query(models.BillReceipt).filter(
+        models.BillReceipt.student_id == student.id,
+        models.BillReceipt.payment_type == "Installment",
+        models.BillReceipt.id != db_bill.id,
+    ).order_by(models.BillReceipt.id.asc()).all()
+    previous_installments = [item for item in all_other_installments if item.id < db_bill.id]
+    if (
+        bill_update.payment_type == "Installment"
+        and len(all_other_installments) >= 4
+    ):
+        raise HTTPException(status_code=400, detail="A student can pay in no more than 4 installments")
+    current_balance = round_currency(db_bill.balance_fee) + round_currency(db_bill.received_amount)
+    received_amount, remaining_balance = validate_bill_payment(
+        bill_update, current_balance, previous_installments
+    )
+    balance_change = round_currency(db_bill.received_amount) - received_amount
+    updated_student_balance = round_currency(student.balance_fee) + balance_change
+    installment_count_after_update = len(all_other_installments) + (
+        1 if bill_update.payment_type == "Installment" else 0
+    )
+    if updated_student_balance < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="This correction would make later payments exceed the student's course balance.",
+        )
+    if installment_count_after_update == 4 and updated_student_balance != Decimal("0.00"):
+        raise HTTPException(
+            status_code=400,
+            detail="The fourth installment must remain the final payment after editing this receipt.",
+        )
+
+    later_bills = db.query(models.BillReceipt).filter(
+        models.BillReceipt.student_id == student.id,
+        models.BillReceipt.id > db_bill.id,
+    ).all()
+    for later_bill in later_bills:
+        later_bill.balance_fee = float(round_currency(later_bill.balance_fee) + balance_change)
+
+    db_bill.receipt_date = bill_update.receipt_date
+    db_bill.payment_type = bill_update.payment_type
+    db_bill.mode_of_payment = bill_update.mode_of_payment
+    db_bill.received_amount = float(received_amount)
+    db_bill.receipt_generated_by = bill_update.receipt_generated_by.strip()
+    db_bill.course_duration = bill_update.course_duration
+    db_bill.next_installment_date = bill_update.next_installment_date
+    db_bill.balance_fee = float(round_currency(db_bill.balance_fee) + balance_change)
+    student.balance_fee = float(updated_student_balance)
     db.commit()
     db.refresh(db_bill)
     return db_bill
