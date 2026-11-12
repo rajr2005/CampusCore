@@ -117,25 +117,17 @@ def get_smtp_setting(name: str, default: str = "") -> str:
 
 app = FastAPI(title="STS Finance API")
 
-@app.middleware("http")
-async def add_cors_headers(request, call_next):
-    origin = request.headers.get("origin")
-    response = await call_next(request)
-
-    if origin and (
-        origin.startswith("http://localhost") or
-        origin.startswith("http://127.0.0.1") or
-        origin.startswith("http://0.0.0.0")
-    ):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
-
-    if request.method == "OPTIONS":
-        response.status_code = 200
-
-    return response
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://campus-core-git-main-raj-r-projects.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+)
 
 SECRET_KEY = "supersecretkey_please_change"
 ALGORITHM = "HS256"
