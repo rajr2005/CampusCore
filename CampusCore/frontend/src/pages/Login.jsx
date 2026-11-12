@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { useLocation } from 'react-router-dom';
-
+const API_BASE_URL = `${import.meta.env.VITE_API_URL}/api`;
 function Login({ onLogin }) {
   const location = useLocation();
   const successMessage = location.state?.message;
@@ -17,10 +17,10 @@ function Login({ onLogin }) {
     setError('');
     setLoading(true);
     try {
-      const res = await axios.post('${API_BASE_URL}/login', {
-        username,
-        password: password
-      });
+      const res = await axios.post(`${API_BASE_URL}/login`, {
+  username,
+  password
+});
       onLogin(res.data);
     } catch (err) {
       if (err.response && err.response.status === 401) {
